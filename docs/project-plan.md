@@ -17,7 +17,7 @@
 | 3. 异常处理（满座/排队/缺货） | **Reflexion 范式 self-correcting**；局部 replan + 上限保护 + 降级输出 |
 | 4. 落地下单 + "把手机递给老婆/朋友" | Executor 阶段白名单写入；**协同确认环（QR + 反馈 → Coordinator 局部修正）** |
 
-**已砍掉的扩展能力**：plan-history-diff 视觉对比、react-flow 状态图（改更轻的 agent-timeline）。这两项不映射赛题能力。
+**说明**：plan-history-diff、react-flow 状态图与 `plan_history` 并非冗余能力，均保留。它们用于增强 agent 的可观测性、重规划可解释性与评审展示效果，仍服务于赛题核心能力的纵向深化。
 
 ## 关键决策
 
@@ -32,7 +32,7 @@
 | **消息总线** | Redis Streams（反馈队列 + pub/sub） | 协同反馈实时推回主视图 |
 | 前端 | Next.js 15 + App Router + React 19 + TS | 单仓库现代栈 |
 | 前后端协议 | AG-UI（LangChain 2025）+ CopilotKit | 后端 state 流式同步前端 |
-| 状态图可视化 | **agent-timeline 时间线组件**（轻量自实现，**砍掉 react-flow**） | 显示节点跳转，无新依赖 |
+| 状态图可视化 | **react-flow 状态图 + agent-timeline 时间线组件** | 同时展示节点流转与线性执行过程，增强 agent 可观测性与评审展示效果 |
 | 样式 | Tailwind v4 + shadcn/ui | 现代克制 |
 | 容器化 | Docker Compose（api + postgres + redis） | 评审一键起 |
 | 无 key fallback | 检测无 key → `app/fallback.py` 预录脚本 | 评审零成本看 demo |
@@ -66,12 +66,13 @@
 | `pending_actions` | `list[ExecutionAction]` | Planner | 待执行 |
 | `executed_actions` | `list[ExecutionAction]` | Executor | 已完成 |
 | `tool_history` | `list[ToolCallRecord]` | 全节点 | trace |
+| `plan_history` | `list[ActivityPlan]` | Planner | 保留每轮草案，支撑重规划对比与可解释性 |
 | `feedback_queue` | `list[ExternalFeedback]` | Coordinator | 来自 share 视图 |
 | `report` | `ExecutionReport \| None` | Executor 终态 | 含可分享文案 |
 | `route` | `Literal['plan','critic','exec','coord','done']` | 节点跳转 | 下一节点 |
 | `error` | `str \| None` | 任意节点 | 终止性错误 |
 
-注：`plan_history` 字段砍掉（v1→v2 视觉对比是扩展能力，不映射赛题）。
+注：`plan_history` 字段保留，用于支撑 v1→v2→v3 的重规划差异展示与可解释性，不属于冗余能力。
 
 ## 1.3 节点详细设计
 
@@ -230,7 +231,7 @@ done ─▶ honcho_writeback           (后台 task，不阻塞终态返回)
 
 | 事件 | payload | 前端用途 |
 | --- | --- | --- |
-| `node_enter` | `{node, state_snapshot}` | agent-timeline 高亮当前节点 |
+| `node_enter` | `{node, state_snapshot}` | react-flow 高亮当前节点；agent-timeline 同步高亮 |
 | `node_exit` | `{node, output_delta}` | timeline 节点完成态 |
 | `tool_call_start` | `{tool, args}` | tool trace 侧栏滚动 |
 | `tool_call_end` | `{tool, result, ms}` | tool trace 更新结果 |
@@ -384,8 +385,10 @@ letsgo-agent/
 │   │   │   └── globals.css
 │   │   ├── components/
 │   │   │   ├── chat-input.tsx
-│   │   │   ├── agent-timeline.tsx           轻量节点跳转时间线（替代 react-flow）
+│   │   │   ├── agent-graph.tsx              react-flow 渲染状态图
+│   │   │   ├── agent-timeline.tsx           时间线视图，辅助展示线性过程
 │   │   │   ├── plan-card.tsx
+│   │   │   ├── plan-history-diff.tsx        展示多轮重规划差异
 │   │   │   ├── action-list.tsx
 │   │   │   ├── execution-report.tsx
 │   │   │   ├── tool-trace.tsx
@@ -457,8 +460,10 @@ letsgo-agent/
 
 ### Phase 7：Web UI 主视图（小明视图）
 - 输入区 + 两个示例 chip
-- `agent-timeline.tsx`：轻量时间线，节点状态(pending/active/done) + Critic reflection 浮层
+- `agent-graph.tsx`：react-flow 渲染状态图，显示节点流转与当前激活节点
+- `agent-timeline.tsx`：时间线视图，补充线性执行过程展示
 - `plan-card.tsx` 时间线 ActivityPlan
+- `plan-history-diff.tsx`：展示 v1→v2→v3 重规划差异
 - `action-list.tsx` confirmation gate
 - `correction-banner.tsx` 显示 violations + reflection 文本
 - `tool-trace.tsx` 折叠侧栏
@@ -498,7 +503,7 @@ letsgo-agent/
 - **LangSmith trace 默认开**：但 `LANGSMITH_API_KEY` 缺失时自动 silent disable，不影响本地跑
 - **Honcho writeback 用 background task**：不阻塞 done 终态返回前端
 - **AG-UI 协议优先**：CopilotKit 适配若版本不稳，回落到自写 SSE + JSON Patch
-- **不引入**：真实地图 SDK / 真实第三方 API / 付费支付 / 用户系统 / 向量库 / 多语言 / DSPy / OR-Tools / MCP / Instructor / LangMem（Honcho 已覆盖）/ react-flow
+- **不引入**：真实地图 SDK / 真实第三方 API / 付费支付 / 用户系统 / 向量库 / 多语言 / DSPy / OR-Tools / MCP / Instructor / LangMem（Honcho 已覆盖）
 
 # 七、验证清单
 
@@ -511,6 +516,8 @@ letsgo-agent/
 - [ ] LangSmith dashboard 可见 trace + dataset 评分热图
 - [ ] LangGraph checkpoint 在 psql 可查；Redis Streams 在 redis-cli 可查
 - [ ] `pytest` + `pnpm test` 全绿；评测胜率 ≥ 80%
+- [ ] react-flow 状态图显示节点流转与当前激活节点
 - [ ] agent-timeline 显示节点跳转
+- [ ] plan-history-diff 可展示多轮重规划差异
 - [ ] `docs/design.md` ≤2 页，含 Plan-and-Solve / HTN / Reflexion 引用
 - [ ] README 5 分钟可让评审上手；公网域名可直达
