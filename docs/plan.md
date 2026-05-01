@@ -34,7 +34,7 @@
 | 前后端协议 | AG-UI（LangChain 2025）+ CopilotKit | 后端 state 流式同步前端 |
 | 状态图可视化 | **react-flow 状态图 + agent-timeline 时间线组件** | 同时展示节点流转与线性执行过程，增强 agent 可观测性与评审展示效果 |
 | 样式 | Tailwind v4 + shadcn/ui | 现代克制 |
-| 容器化 | Docker Compose（api + postgres + redis） | 评审一键起 |
+| 容器化 | Docker Compose（frontend + api + postgres + redis） | 项目自建运行面统一容器化，便于在用户服务器上一键部署 |
 | 无 key fallback | 检测无 key → `app/fallback.py` 预录脚本 | 评审零成本看 demo |
 
 ---
@@ -313,15 +313,21 @@ create index share_thread_idx on share(thread_id);
 
 ## 3.5 Docker Compose
 
-```
+```yaml
 services:
-  api          (FastAPI)
-  postgres     postgres:16-alpine
-  redis        redis:7-alpine
-  caddy        反代到子域
+  frontend     # Next.js
+  api          # FastAPI
+  postgres     # postgres:16-alpine
+  redis        # redis:7-alpine
 ```
 
-Honcho 与 LangSmith 都是云端服务，不在本地 compose 中。
+项目自建运行面全部通过 Docker Compose 部署到用户服务器。反向代理不由项目 compose 内提供，统一由用户现有的 Nginx Proxy Manager（NPM）负责域名、HTTPS 与转发。
+
+推荐转发方式：
+- `agent.<your-domain>` → `frontend:3000`
+- `api.<your-domain>` → `api:8000`
+
+Honcho 与 LangSmith 仍然使用云端服务，不在本地 compose 中。
 
 ---
 
@@ -420,10 +426,10 @@ letsgo-agent/
 ### Phase 1：Monorepo 骨架 + 基础设施
 - 后端：`uv init backend`；加 fastapi/uvicorn/langgraph/langchain-openai/langchain-core/pydantic/pydantic-settings/asyncpg/psycopg/redis/honcho/langsmith/httpx/pytest/pytest-asyncio
 - 前端：`pnpm create next-app frontend`；加 copilotkit、qrcode.react、zod、shadcn
-- `docker-compose.yml` 起 postgres + redis
+- `docker-compose.yml` 起 `frontend`、`api`、`postgres`、`redis`
 - 两份 `.env.example`（含 PROXY_BASE_URL/KEY/MODEL/PG/REDIS/HONCHO/LANGSMITH 占位）；扩 `.gitignore`
 - README 最小骨架
-- **验证**：`docker compose up -d postgres redis && uv run uvicorn app.main:app` 与 `pnpm dev` 各启；DB/Redis/Honcho/LangSmith 连通性 ping 测试
+- **验证**：`docker compose up -d` 后可直接访问前端与后端；DB/Redis/Honcho/LangSmith 连通性通过
 
 ### Phase 2：数据模型 + Mock Tools
 - `app/models.py` 全部 pydantic
@@ -488,8 +494,14 @@ letsgo-agent/
 - **验证**：A4 ≤2 页
 
 ### Phase 10：部署 + 最终验证
-- 后端 Dockerfile + compose 部署到用户服务器；caddy 子域反代
-- 前端 Vercel 或同服 docker
+- 前端与后端统一 Docker Compose 部署到用户服务器
+- 由用户现有的 Nginx Proxy Manager（NPM）负责域名、HTTPS 与反向代理
+
+推荐转发方式：
+
+- `agent.<your-domain>` → `frontend:3000`
+- `api.<your-domain>` → `api:8000`
+
 - 浏览器 E2E：完整家庭场景（含妻子反馈）+ 朋友场景 + 异常场景
 - 评测胜率 ≥ 80%
 - README 末尾「已在 macOS / Linux / Node 22 / Python 3.12 / Postgres 16 / Redis 7 验证」
