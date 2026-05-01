@@ -37,11 +37,37 @@
 | 容器化 | Docker Compose（frontend + api + postgres + redis） | 项目自建运行面统一容器化，便于在用户服务器上一键部署 |
 | 无 key fallback | 检测无 key → `app/fallback.py` 预录脚本 | 评审零成本看 demo |
 
----
+## 商业价值映射
 
-# 一、Agent 详细设计（核心）
+该方案的商业价值不在于“多做一个周末规划网站”，而在于把本地探索从“搜索/推荐”推进到“决策达成 + 交易闭环 + 后续复购”。对应美团本地生活业务，重点价值如下：
 
-## 1.1 Agent 哲学（4 原则）
+- **提升转化率（CVR）**：从“去哪玩”直接推进到餐厅订位、活动选择、加购下单与通知发送，缩短用户从灵感到交易的路径。
+- **提升连带率与客单价**：将活动、餐饮、蛋糕/鲜花等加购串联在同一条 agent 规划链路里，提升跨品类联动机会。
+- **降低多人决策摩擦**：通过协同确认环让家庭/朋友成员直接反馈，减少“商量不定”带来的流失，提高多人场景成单率。
+- **提升履约成功率**：通过 Critic 审核、可用性检查与异常重规划，在餐厅满座、排队过长、缺货等情况下自动换案，提升最终落单成功率。
+- **增强长期留存与品牌心智**：通过 Honcho 沉淀家庭/朋友画像，让系统在后续会话中更快给出更贴合的方案，强化“帮你把事情做完”的品牌认知。
+
+从业务视角看，本项目最终要证明的不是“能做活动推荐”，而是 Agent 能否成为本地生活场景中的“成交推动器”和“多角色协商中枢”。
+
+## 展示体验主线
+
+最终交付不是“生成一个方案结果页”，而是一个**桌面端优先的 Agent 展示控制台 + 手机端协同确认页**。
+
+- **桌面端主路径**：集中展示输入目标、graph/timeline、tool trace、Critic 打回、重规划差异与最终执行结果，服务评审演示与可观测性。
+- **手机端辅路径**：通过 `share` 页承接扫码/链接打开后的只读查看与反馈输入，突出家庭/朋友协同确认这一真实场景。
+- **展示脚本明确化**：最终演示优先围绕三条路径展开——家庭场景正常闭环、朋友场景正常闭环、异常触发后的 self-correct + 协同反馈重排。
+
+## 真实数据与优化策略
+
+为满足“应用效果”维度中对真实数据和优化的要求，本项目不以纯虚构 fixture 为目标，而是采用**真实公开样本 + 数据驱动评测调优**的策略：
+
+- **真实公开样本作为种子数据**：POI、餐饮、排队时段、价格带等基础信息尽量采用真实公开样本整理为本地 fixtures，再在此基础上做 mock 执行。
+- **真实场景集驱动评测**：围绕家庭、朋友、下雨天、减脂餐、亲子活动、供给异常等场景构造评测集，而不是只做理想路径 demo。
+- **LangSmith 驱动调优**：基于评测结果迭代 Planner prompt、Critic 阈值、路由策略与 replan 触发条件，把“训练和优化”落到数据驱动的 prompt/workflow 优化上。
+
+## 一、Agent 详细设计（核心）
+
+### 1.1 Agent 哲学（4 原则）
 
 赛题不是检索推荐，是「帮你把事情做完」。这要求：
 
@@ -436,9 +462,9 @@ letsgo-agent/
 ### Phase 2：数据模型 + Mock Tools
 - `app/models.py` 全部 pydantic
 - 6 个 tool（pydantic 入参 + `@tool` 装饰）
-- `_data/` JSON 填充
+- `_data/` JSON 填充，优先采用真实公开 POI / 餐饮样本整理为 seed fixtures，而非纯虚构数据
 - `_failures.py` 异常开关
-- **验证**：`pytest tests/test_tools.py` 全绿
+- **验证**：`pytest tests/test_tools.py` 全绿；fixture 字段可覆盖真实价格带、排队时段、亲子/减脂/群体友好等关键标签
 
 ### Phase 3：Memory + Observability 集成
 - `app/memory/honcho.py`：HonchoClient 封装 + UserProfile pydantic 镜像
@@ -477,22 +503,27 @@ letsgo-agent/
 - `tool-trace.tsx` 折叠侧栏
 - `execution-report.tsx` 报告 + 复制
 - 移动端 responsive
+- 主视图交互围绕评审演示路径组织：保证家庭正常闭环、朋友正常闭环、异常触发 self-correct 三条路径都可顺滑展示
 - **验证**：浏览器跑两条 golden path + 一条 self-correct
 
 ### Phase 8：协同确认环
 - 主视图方案确认后 `share-launcher.tsx`：QR + link
 - `/share/[id]` 路由：只读 plan + 结构化反馈表单
+- share 页优先面向手机端反馈体验设计，确保扫码打开后能在最少步骤内完成查看、反馈与返回主会话重排
 - 反馈 → Redis Streams → Coordinator → 局部 replan
 - **验证**：手机扫 QR → 反馈 → 主视图自动重排
 
 ### Phase 9：评测 + 交付文档
-- `tests/eval/` 上传 LangSmith dataset：5 家庭 + 3 朋友 + 2 异常 = 10 case
-- LangSmith evaluator 跑 5 维评分 batch；截图入 README
+- `tests/eval/` 上传 LangSmith dataset：5 家庭 + 3 朋友 + 2 异常 = 10 case，数据集优先基于真实公开样本和真实场景约束构造
+- LangSmith evaluator 跑 5 维评分 batch；截图入 README，并基于结果迭代 Planner prompt、Critic 阈值、路由策略与 replan 触发条件
 - `docs/design.md`（≤2 页）：
+
   - §1 Multi-Agent Planning：状态图 + 节点分工 + Critic 5 维 + 引用 Plan-and-Solve / HTN
   - §2 工具调用链路：阶段白名单 + 表
   - §3 异常 Self-Correcting：Reflexion 范式 + 上限保护（引用论文）
   - §4 跨会话记忆：Honcho 集成（一段简述）
+
+- README / design 文档中明确补充商业价值映射：CVR、连带率、多人场景成单率、履约成功率、留存与品牌心智
 - **验证**：A4 ≤2 页
 
 ### Phase 10：部署 + 最终验证
