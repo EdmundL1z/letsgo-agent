@@ -323,9 +323,11 @@ services:
 
 项目自建运行面全部通过 Docker Compose 部署到用户服务器。反向代理不由项目 compose 内提供，统一由用户现有的 Nginx Proxy Manager（NPM）负责域名、HTTPS 与转发。
 
-推荐转发方式：
-- `agent.<your-domain>` → `frontend:3000`
-- `api.<your-domain>` → `api:8000`
+推荐单域名方式：
+
+- `letsgo.bigdust.cc` → `frontend:3000`
+- `letsgo.bigdust.cc/api/*` → `api:8000`
+- `letsgo.bigdust.cc/share/*` → 前端 share 路由
 
 Honcho 与 LangSmith 仍然使用云端服务，不在本地 compose 中。
 
@@ -497,10 +499,11 @@ letsgo-agent/
 - 前端与后端统一 Docker Compose 部署到用户服务器
 - 由用户现有的 Nginx Proxy Manager（NPM）负责域名、HTTPS 与反向代理
 
-推荐转发方式：
+推荐单域名方式：
 
-- `agent.<your-domain>` → `frontend:3000`
-- `api.<your-domain>` → `api:8000`
+- `letsgo.bigdust.cc` → `frontend:3000`
+- `letsgo.bigdust.cc/api/*` → `api:8000`
+- `letsgo.bigdust.cc/share/*` → 前端 share 路由
 
 - 浏览器 E2E：完整家庭场景（含妻子反馈）+ 朋友场景 + 异常场景
 - 评测胜率 ≥ 80%
