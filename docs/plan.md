@@ -1,4 +1,4 @@
-# letsgo-agent 项目构建计划（出彩路线）
+# letsgo-agent 项目构建计划
 
 ## Context
 
