@@ -29,9 +29,9 @@
 | **跨会话记忆** | **Honcho（云端已有）** | 零增量基础设施；user representation 自动抽取 |
 | **可观测 + Eval** | **LangSmith**（trace + datasets + evaluator） | 评审可视化 trace；免费 tier 够用 |
 | **持久化** | PostgreSQL（LangGraph checkpointer + share 表） | 替代不稳的 SQLite；官方生产推荐 |
-| **消息总线** | Redis Streams（反馈队列 + pub/sub） | 协同反馈实时推回主视图 |
+| **消息总线** | Redis pub/sub（可选，多窗口同步） | 协同反馈写入 PostgreSQL，直接唤醒 LangGraph |
 | 前端 | Next.js 15 + App Router + React 19 + TS | 单仓库现代栈 |
-| 前后端协议 | AG-UI（LangChain 2025）+ CopilotKit | 后端 state 流式同步前端 |
+| 前后端协议 | 自写 SSE + JSON Patch | 后端 state 流式同步前端 |
 | 状态图可视化 | **react-flow 状态图 + agent-timeline 时间线组件** | 同时展示节点流转与线性执行过程，增强 agent 可观测性与评审展示效果 |
 | 样式 | Tailwind v4 + shadcn/ui | 现代克制 |
 | 容器化 | Docker Compose（frontend + api + postgres + redis） | 项目自建运行面统一容器化，便于在用户服务器上一键部署 |
@@ -143,8 +143,6 @@
 - 否则记录 `violations` + `reflection` → `replan_count += 1` → `route='plan'`
 - `replan_count ≥ 3` → 降级：标 `partial=True` 仍进 exec，share text 加"以下安排部分项需手动复查"
 
-**Tool 白名单**：可再调 `check_availability` 复核
-
 ### 节点 C：Executor
 
 **职责**：按 `pending_actions` 顺序调写入 tool；填充 `executed_actions` 与 `report.share_text`。
@@ -251,9 +249,9 @@ done ─▶ honcho_writeback           (后台 task，不阻塞终态返回)
 
 - **隐私边界**：Honcho 数据在用户云实例，不进我们的 Postgres；前端永远不直接访问 Honcho。
 
-## 1.8 Streaming / AG-UI 事件协议
+## 1.8 Streaming / SSE 事件协议
 
-后端通过 LangGraph `astream_events` 推 SSE，符合 AG-UI 协议。前端 CopilotKit `useCoAgent` 消费。事件：
+后端通过 LangGraph `astream_events` 推标准 SSE，前端用原生 `EventSource` + `useReducer` 消费。事件：
 
 | 事件 | payload | 前端用途 |
 | --- | --- | --- |
@@ -284,12 +282,12 @@ done ─▶ honcho_writeback           (后台 task，不阻塞终态返回)
 | --- | --- | --- | --- |
 | `search_poi` | planner/critic | `city, kind, party_hints, radius_km` | `list[POI]`（含 `family_friendly` / `group_friendly`） |
 | `search_restaurant` | planner/critic | `city, cuisine, party_hints, dietary, radius_km` | `list[Restaurant]`（含 `has_low_calorie` / `cuisine_tags`） |
-| `check_availability` | planner/critic | `venue_id, date, party_size, time` | `{available, queue_minutes, alt_times}` |
+| `check_availability` | planner | `venue_id, date, party_size, time` | `{available, queue_minutes, alt_times}` |
 | `reserve_table` | executor | `restaurant_id, time, party_size, contact` | `{reservation_id, status}` |
 | `place_order` | executor | `item_kind, vendor, recipient_venue, eta` | `{order_id, eta_minutes}` |
 | `send_notification` | executor | `recipient_type, content, channel` | `{message_id, status}` |
 
-每个 tool：LangChain `@tool` + pydantic 入参；Critic 可复用查询类 tool 复核。
+每个 tool：LangChain `@tool` + pydantic 入参。
 
 ## 2.2 Mock 数据
 
@@ -317,12 +315,20 @@ create table share (
   expires_at timestamptz default (now() + interval '24 hours')
 );
 create index share_thread_idx on share(thread_id);
+
+create table feedback (
+  id uuid primary key,
+  share_id uuid references share(id),
+  thread_id text not null,
+  content text not null,
+  created_at timestamptz default now()
+);
 ```
 
-## 3.2 Redis Streams（自建）
+## 3.2 Redis（自建，可选）
 
-- `feedback:{thread_id}` stream：share 视图写入；Coordinator 用 `XREADGROUP` 消费
 - `events:{thread_id}` pub/sub（可选）：多窗口同步
+- 反馈数据写入 PostgreSQL `feedback` 表；`POST /api/share/{share_id}/feedback` 接口写表后直接唤醒 LangGraph 图（`Command(resume=feedback)`），不依赖 Redis
 
 ## 3.3 Honcho（用户已有云端）
 
@@ -396,9 +402,9 @@ letsgo-agent/
 │   │   │   └── _failures.py
 │   │   ├── api/
 │   │   │   ├── routes.py                    REST：会话 + share
-│   │   │   └── ag_ui.py                     SSE
+│   │   │   └── sse.py                       SSE
 │   │   ├── share.py                         share 表 CRUD
-│   │   ├── feedback.py                      Redis Streams 消费/生产
+│   │   ├── feedback.py                      feedback 表 CRUD + LangGraph 唤醒
 │   │   └── fallback.py                      无 key 脚本
 │   └── tests/
 │       ├── test_tools.py
@@ -410,7 +416,7 @@ letsgo-agent/
 │       ├── test_honcho.py                   memory 集成
 │       └── eval/                            LangSmith dataset
 ├── frontend/
-│   ├── package.json                         next/react/tailwind/shadcn/copilotkit/zod/qrcode.react
+│   ├── package.json                         next/react/tailwind/shadcn/zod/qrcode.react
 │   ├── src/
 │   │   ├── app/
 │   │   │   ├── layout.tsx
@@ -431,7 +437,7 @@ letsgo-agent/
 │   │   │   ├── feedback-form.tsx
 │   │   │   └── ui/                          shadcn
 │   │   └── lib/
-│   │       ├── ag-ui-client.ts              CopilotKit 接 AG-UI
+│   │       ├── sse-client.ts                EventSource + useReducer 状态管理
 │   │       └── types.ts                     与 pydantic 对齐的 zod
 │   ├── next.config.ts
 │   ├── tailwind.config.ts
@@ -453,7 +459,7 @@ letsgo-agent/
 
 ### Phase 1：Monorepo 骨架 + 基础设施
 - 后端：`uv init backend`；加 fastapi/uvicorn/langgraph/langchain-openai/langchain-core/pydantic/pydantic-settings/asyncpg/psycopg/redis/honcho/langsmith/httpx/pytest/pytest-asyncio
-- 前端：`pnpm create next-app frontend`；加 copilotkit、qrcode.react、zod、shadcn
+- 前端：`pnpm create next-app frontend`；加 qrcode.react、zod、shadcn
 - `docker-compose.yml` 起 `frontend`、`api`、`postgres`、`redis`
 - 两份 `.env.example`（含 PROXY_BASE_URL/KEY/MODEL/PG/REDIS/HONCHO/LANGSMITH 占位）；扩 `.gitignore`
 - README 最小骨架
@@ -485,10 +491,10 @@ letsgo-agent/
 - E2E：家庭、朋友、Reflexion replan 三条
 - **验证**：`pytest tests/test_graph_e2e.py tests/test_replan.py` 全绿；checkpoint 数据可查；LangSmith 看到 trace
 
-### Phase 6：FastAPI + AG-UI SSE
-- `POST /api/session/start`、`GET /api/ag-ui/{thread_id}` SSE、`POST /api/session/{thread_id}/confirm`
+### Phase 6：FastAPI + SSE
+- `POST /api/session/start`、`GET /api/stream/{thread_id}` SSE、`POST /api/session/{thread_id}/confirm`
 - `POST /api/share/{thread_id}/create`、`GET /api/share/{share_id}`、`POST /api/share/{share_id}/feedback`
-- `feedback.py` Redis Streams
+- `feedback.py` PostgreSQL feedback 表 + LangGraph 唤醒
 - 无 key 自动 fallback
 - **验证**：curl 全链路；无 key 也能跑
 
@@ -507,10 +513,10 @@ letsgo-agent/
 - **验证**：浏览器跑两条 golden path + 一条 self-correct
 
 ### Phase 8：协同确认环
-- 主视图方案确认后 `share-launcher.tsx`：QR + link
+- Critic 通过后主视图展示 `share-launcher.tsx`：QR + link（供家人在用户确认前查看并反馈）
 - `/share/[id]` 路由：只读 plan + 结构化反馈表单
 - share 页优先面向手机端反馈体验设计，确保扫码打开后能在最少步骤内完成查看、反馈与返回主会话重排
-- 反馈 → Redis Streams → Coordinator → 局部 replan
+- 反馈 → PostgreSQL feedback 表 + 直接唤醒 LangGraph → Coordinator → 局部 replan
 - **验证**：手机扫 QR → 反馈 → 主视图自动重排
 
 ### Phase 9：评测 + 交付文档
@@ -548,19 +554,19 @@ letsgo-agent/
 - **服务端 only LLM**：API key 永不出后端
 - **LangSmith trace 默认开**：但 `LANGSMITH_API_KEY` 缺失时自动 silent disable，不影响本地跑
 - **Honcho writeback 用 background task**：不阻塞 done 终态返回前端
-- **AG-UI 协议优先**：CopilotKit 适配若版本不稳，回落到自写 SSE + JSON Patch
+- **SSE 自实现**：后端 FastAPI SSE + 前端原生 `EventSource`，不依赖第三方 agent UI 框架
 - **不引入**：真实地图 SDK / 真实第三方 API / 付费支付 / 用户系统 / 向量库 / 多语言 / DSPy / OR-Tools / MCP / Instructor / LangMem（Honcho 已覆盖）
 
 # 七、验证清单
 
 - [ ] `docker compose up` 默认即开（无 key fallback 生效）
-- [ ] 配 `.env.local` 后真实 GPT-5.5 跑通家庭场景：方案 → Critic 反弹一次（reflection 可见）→ 通过 → 确认 → 执行 → 报告 → share link
+- [ ] 配 `.env.local` 后真实 GPT-5.5 跑通家庭场景：方案 → Critic 反弹一次（reflection 可见）→ 通过 → share link 生成 → （可选：家人反馈 → 局部 replan）→ 确认 → 执行 → 报告
 - [ ] 朋友场景同样跑通
 - [ ] 协同视图：手机扫 QR → 反馈"想吃辣" → 主视图局部 replan
 - [ ] `?inject=restaurant_full` 触发 Reflexion self-correct 全流程
 - [ ] 第二次进入会话时，Planner 能在 prompt 里看到 Honcho user representation
 - [ ] LangSmith dashboard 可见 trace + dataset 评分热图
-- [ ] LangGraph checkpoint 在 psql 可查；Redis Streams 在 redis-cli 可查
+- [ ] LangGraph checkpoint 在 psql 可查；feedback 表写入可查
 - [ ] `pytest` + `pnpm test` 全绿；评测胜率 ≥ 80%
 - [ ] react-flow 状态图显示节点流转与当前激活节点
 - [ ] agent-timeline 显示节点跳转
